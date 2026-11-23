@@ -203,7 +203,7 @@ func TestMaterializeLiveTranscript(t *testing.T) {
 	}
 }
 
-func TestMaterializeLiveTranscript_FallsBackToStubWhenSessionMissing(t *testing.T) {
+func TestPrepareTranscript_ErrorsWhenSessionMissing(t *testing.T) {
 	dataDir, _ := setupSessionsDB(t)
 	setDevinDataDir(t, dataDir)
 	transcriptDir := t.TempDir()
@@ -211,19 +211,15 @@ func TestMaterializeLiveTranscript_FallsBackToStubWhenSessionMissing(t *testing.
 
 	d := New()
 	sessionRef := filepath.Join(transcriptDir, "brisk-otter.json")
-	if err := d.PrepareTranscript(sessionRef); err != nil {
-		t.Fatalf("PrepareTranscript: %v", err)
+	if err := d.PrepareTranscript(sessionRef); err == nil {
+		t.Fatal("PrepareTranscript succeeded for session absent from sessions.db, want error")
 	}
-
-	tx, err := parseTranscriptFile(sessionRef)
+	data, err := os.ReadFile(sessionRef)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("capture-failed marker was not written: %v", err)
 	}
-	if tx.SessionID != "brisk-otter" {
-		t.Errorf("session_id = %q, want brisk-otter", tx.SessionID)
-	}
-	if len(tx.Steps) != 0 {
-		t.Errorf("steps = %d, want 0", len(tx.Steps))
+	if !strings.Contains(string(data), "ENTIRE CAPTURE FAILED - transcript unavailable") {
+		t.Error("absent-session failure did not write capture-failed marker")
 	}
 }
 
@@ -323,7 +319,7 @@ func TestPrepareTranscript_RefreshesMaterializedTranscript(t *testing.T) {
 	}
 }
 
-func TestPrepareTranscript_ReplacesStubWithLiveData(t *testing.T) {
+func TestPrepareTranscript_ReplacesStaleSnapshotWithLiveData(t *testing.T) {
 	dataDir, db := setupSessionsDB(t)
 	setDevinDataDir(t, dataDir)
 	transcriptDir := t.TempDir()
@@ -331,7 +327,7 @@ func TestPrepareTranscript_ReplacesStubWithLiveData(t *testing.T) {
 
 	sessionID := "stub-first"
 	sessionRef := filepath.Join(transcriptDir, sessionID+".json")
-	if err := writeStubTranscript(sessionRef); err != nil {
+	if err := os.WriteFile(sessionRef, []byte("stale snapshot"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -348,32 +344,6 @@ func TestPrepareTranscript_ReplacesStubWithLiveData(t *testing.T) {
 	}
 	if len(tx.Steps) != 1 {
 		t.Fatalf("steps = %d, want stub replaced with 1 real step", len(tx.Steps))
-	}
-}
-
-func TestPrepareTranscript_LeavesDevinTranscriptAlone(t *testing.T) {
-	dataDir, _ := setupSessionsDB(t)
-	setDevinDataDir(t, dataDir)
-	transcriptDir := t.TempDir()
-	t.Setenv("ENTIRE_TEST_DEVIN_TRANSCRIPT_DIR", transcriptDir)
-
-	// A Devin-authored transcript: no entire_materialized marker, non-empty
-	// steps, fresh mtime. PrepareTranscript must not touch it.
-	path := filepath.Join(transcriptDir, "almond-cylinder.json")
-	if err := os.WriteFile(path, []byte(sampleTranscript), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	d := New()
-	if err := d.PrepareTranscript(path); err != nil {
-		t.Fatalf("PrepareTranscript: %v", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != sampleTranscript {
-		t.Error("Devin-authored transcript was modified")
 	}
 }
 

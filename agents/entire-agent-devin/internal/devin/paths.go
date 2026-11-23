@@ -47,10 +47,21 @@ func devinDataDir() (string, error) {
 	return filepath.Join(homeDir, ".local", "share", "devin"), nil
 }
 
+func SnapshotDir() (string, error) {
+	if override := os.Getenv("ENTIRE_TEST_DEVIN_TRANSCRIPT_DIR"); override != "" {
+		return override, nil
+	}
+	dataDir, err := devinDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataDir, "entire-transcripts"), nil
+}
+
 // GetSessionDir returns the directory where Devin stores session transcripts.
 // Devin's transcript directory is flat, so repoPath is unused.
 func (a *Agent) GetSessionDir(_ string) (string, error) {
-	return TranscriptsDir()
+	return SnapshotDir()
 }
 
 // safePathSessionID replaces runs outside A-Za-z0-9_.- with an underscore
@@ -79,7 +90,7 @@ func sessionRefForID(sessionID string) string {
 	if sessionID == "" {
 		return ""
 	}
-	dir, err := TranscriptsDir()
+	dir, err := SnapshotDir()
 	if err != nil {
 		return ""
 	}

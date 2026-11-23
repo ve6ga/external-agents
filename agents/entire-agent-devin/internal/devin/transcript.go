@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/entireio/external-agents/agents/entire-agent-devin/internal/protocol"
 )
@@ -37,109 +34,10 @@ func (a *Agent) PrepareTranscript(sessionRef string) error {
 	if sessionRef == "" {
 		return nil
 	}
-	// A transcript we materialized (marked, or a bare stub) is refreshed from
-	// the live session store on every checkpoint — Devin's canonical file may
-	// still be a whole session away. Devin-authored transcripts (no marker)
-	// keep the fresh/stale/poll behavior below.
-	if _, err := os.Stat(sessionRef); err == nil && isEntireMaterialized(sessionRef) {
-		// Best-effort: keep the existing file if the refresh fails.
-		_ = a.materializeLiveTranscript(sessionRef)
-		return nil
-	}
-	const (
-		maxWait      = 2 * time.Second
-		pollInterval = 50 * time.Millisecond
-		maxSkew      = 2 * time.Second
-		// staleThreshold: a transcript that hasn't been touched in minutes
-		// belongs to a previous session run and no flush is coming.
-		staleThreshold = 2 * time.Minute
-	)
-
-	hookStart := time.Now()
-	if info, err := os.Stat(sessionRef); err == nil {
-		age := time.Since(info.ModTime())
-		if age < maxSkew {
-			return nil // Already fresh
-		}
-		if age > staleThreshold {
-			return nil // Previous run's transcript; no flush coming mid-session
-		}
-	}
-
-	deadline := hookStart.Add(maxWait)
-	for time.Now().Before(deadline) {
-		if info, err := os.Stat(sessionRef); err == nil && info.ModTime().After(hookStart.Add(-maxSkew)) {
-			return nil
-		}
-		time.Sleep(pollInterval)
-	}
-
-	if _, err := os.Stat(sessionRef); os.IsNotExist(err) {
-		// Devin has not flushed the canonical ATIF file yet. Try to build one
-		// from the live SQLite session store; if that fails, fall back to a
-		// minimal stub so the checkpoint can proceed.
-		if err := a.materializeLiveTranscript(sessionRef); err != nil {
-			return writeStubTranscript(sessionRef)
-		}
-	}
-	return nil // Stale file left in place: best-effort
-}
-
-// writeStubTranscript writes a minimal valid ATIF document for a session
-// whose canonical transcript has not been flushed yet. Never overwrites an
-// existing file. Devin regenerates transcripts from its session store on
-// exit, so the stub's lifetime ends with the session run.
-func writeStubTranscript(sessionRef string) error {
-	sessionID := strings.TrimSuffix(filepath.Base(sessionRef), ".json")
-	stub := ATIFTranscript{
-		SchemaVersion: "ATIF-v1.7",
-		SessionID:     sessionID,
-		Steps:         []ATIFStep{},
-	}
-	data, err := json.Marshal(stub)
-	if err != nil {
-		return fmt.Errorf("failed to marshal stub transcript: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(sessionRef), 0o750); err != nil {
-		return fmt.Errorf("failed to create transcript directory: %w", err)
-	}
-	f, err := os.OpenFile(sessionRef, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if os.IsExist(err) {
-			return nil // Real transcript landed in the meantime — keep it
-		}
-		return fmt.Errorf("failed to create stub transcript: %w", err)
-	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("failed to write stub transcript: %w", err)
+	if err := a.materializeLiveTranscript(sessionRef); err != nil {
+		return errors.Join(err, writeCaptureFailedMarker(sessionRef))
 	}
 	return nil
-}
-
-// isEntireMaterialized reports whether the transcript at path was written by
-// this integration rather than by Devin itself: either the agent info carries
-// our marker, or the file is a stub (no steps, no agent block).
-func isEntireMaterialized(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	t, err := parseTranscript(data)
-	if err != nil {
-		return false
-	}
-	var agent struct {
-		Extra map[string]any `json:"extra"`
-	}
-	if len(t.Agent) > 0 {
-		if err := json.Unmarshal(t.Agent, &agent); err == nil {
-			if v, ok := agent.Extra["entire_materialized"].(bool); ok && v {
-				return true
-			}
-		}
-	}
-	return len(t.Steps) == 0 && len(t.Agent) == 0
 }
 
 // GetTranscriptPosition returns the current step count of a Devin transcript.

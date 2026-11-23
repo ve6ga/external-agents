@@ -200,6 +200,36 @@ func (a *Agent) materializeLiveTranscript(sessionRef string) error {
 	return atomicWriteFile(sessionRef, data, 0o600)
 }
 
+func writeCaptureFailedMarker(sessionRef string) error {
+	sessionID := strings.TrimSuffix(filepath.Base(sessionRef), ".json")
+	if sessionID == "" {
+		sessionID = "unknown"
+	}
+	step, err := json.Marshal(map[string]any{
+		"step_id":   1,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"source":    "system",
+		"message":   "ENTIRE CAPTURE FAILED - transcript unavailable",
+	})
+	if err != nil {
+		return err
+	}
+	tx := ATIFTranscript{
+		SchemaVersion: "ATIF-v1.7",
+		SessionID:     sessionID,
+		Agent:         json.RawMessage(`{"name":"devin"}`),
+		Steps:         []ATIFStep{step},
+	}
+	data, err := json.Marshal(tx)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(sessionRef), 0o750); err != nil {
+		return err
+	}
+	return atomicWriteFile(sessionRef, data, 0o600)
+}
+
 func loadSession(db *sql.DB, sessionID string) (*sessionRow, error) {
 	var s sessionRow
 	err := db.QueryRow(`

@@ -3,8 +3,8 @@ package devin
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 )
 
 // sampleTranscript mirrors the live-captured ATIF-v1.7 shape (see AGENT.md):
@@ -179,91 +179,27 @@ func TestReassembleTranscript_Empty(t *testing.T) {
 	}
 }
 
-func TestPrepareTranscript_FastPaths(t *testing.T) {
+func TestPrepareTranscript_EmptyRef(t *testing.T) {
 	t.Parallel()
 	d := New()
-	// Fresh file: returns immediately.
-	fresh := writeSampleTranscript(t)
-	start := time.Now()
-	if err := d.PrepareTranscript(fresh); err != nil {
-		t.Fatalf("PrepareTranscript fresh: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Errorf("fresh file took %v, want immediate return", elapsed)
-	}
-
-	// Stale file (old mtime): returns immediately, no flush is coming.
-	stale := writeSampleTranscript(t)
-	old := time.Now().Add(-10 * time.Minute)
-	if err := os.Chtimes(stale, old, old); err != nil {
-		t.Fatal(err)
-	}
-	start = time.Now()
-	if err := d.PrepareTranscript(stale); err != nil {
-		t.Fatalf("PrepareTranscript stale: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Errorf("stale file took %v, want immediate return", elapsed)
-	}
-
-	// Empty ref: no-op.
 	if err := d.PrepareTranscript(""); err != nil {
 		t.Fatalf("PrepareTranscript empty ref: %v", err)
 	}
 }
 
-func TestPrepareTranscript_MaterializesStubWhenMissing(t *testing.T) {
-	t.Parallel()
+func TestPrepareTranscript_ErrorsWhenStoreMissing(t *testing.T) {
 	d := New()
+	setDevinDataDir(t, t.TempDir())
 	path := filepath.Join(t.TempDir(), "brisk-otter.json")
 
-	if err := d.PrepareTranscript(path); err != nil {
-		t.Fatalf("PrepareTranscript: %v", err)
+	if err := d.PrepareTranscript(path); err == nil {
+		t.Fatal("PrepareTranscript succeeded with no sessions.db, want error")
 	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("stub transcript was not materialized: %v", err)
+		t.Fatalf("capture-failed marker was not written: %v", err)
 	}
-	stub, err := parseTranscript(data)
-	if err != nil {
-		t.Fatalf("stub is not valid ATIF: %v", err)
-	}
-	if stub.SessionID != "brisk-otter" {
-		t.Errorf("stub session_id = %q, want brisk-otter", stub.SessionID)
-	}
-	if len(stub.Steps) != 0 {
-		t.Errorf("stub steps = %d, want 0", len(stub.Steps))
-	}
-
-	// The stub must satisfy the analyzer surface too.
-	pos, err := d.GetTranscriptPosition(path)
-	if err != nil || pos != 0 {
-		t.Errorf("stub position = %d, %v; want 0, nil", pos, err)
-	}
-}
-
-func TestPrepareTranscript_WaitsForFlush(t *testing.T) {
-	t.Parallel()
-	d := New()
-	path := filepath.Join(t.TempDir(), "late.json")
-
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		if err := os.WriteFile(path, []byte(sampleTranscript), 0o600); err != nil {
-			panic(err)
-		}
-	}()
-
-	start := time.Now()
-	if err := d.PrepareTranscript(path); err != nil {
-		t.Fatalf("PrepareTranscript: %v", err)
-	}
-	elapsed := time.Since(start)
-	if _, err := os.Stat(path); err != nil {
-		t.Fatal("file was not written by the goroutine")
-	}
-	if elapsed >= 2*time.Second {
-		t.Errorf("waited full timeout (%v) despite flush landing at 150ms", elapsed)
+	if !strings.Contains(string(data), "ENTIRE CAPTURE FAILED - transcript unavailable") {
+		t.Error("missing-store failure did not write capture-failed marker")
 	}
 }
